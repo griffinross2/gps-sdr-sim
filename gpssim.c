@@ -1314,7 +1314,7 @@ void computeRange(range_t *rho, ephem_t eph, ionoutc_t *ionoutc, gpstime_t g, do
  *  \param[in] rho1 Current range, after \a dt has expired
  *  \param[in dt delta-t (time difference) in seconds
  */
-void computeCodePhase(channel_t *chan, range_t rho1, double dt)
+void computeCodePhase(channel_t *chan, range_t rho1, double dt,	double if_freq)
 {
 	double ms;
 	int ims;
@@ -1324,7 +1324,7 @@ void computeCodePhase(channel_t *chan, range_t rho1, double dt)
 	rhorate = (rho1.range - chan->rho0.range)/dt;
 
 	// Carrier and code frequency.
-	chan->f_carr = -rhorate/LAMBDA_L1;
+	chan->f_carr = -rhorate/LAMBDA_L1 + if_freq;
 	chan->f_code = CODE_FREQ + chan->f_carr*CARR_TO_CODE;
 
 	// Initial code phase and data bit counters.
@@ -1705,7 +1705,7 @@ void usage(void)
 		"  -d <duration>    Duration [sec] (dynamic mode max: %.0f, static mode max: %d)\n"
 		"  -o <output>      I/Q sampling data file (default: gpssim.bin)\n"
 		"  -s <frequency>   Sampling frequency [Hz] (default: 2600000)\n"
-		"  -b <iq_bits>     I/Q data format [1/8/16] (default: 16)\n"
+		"  -b <iq_bits>     I/Q data format [1/11/88/1616] (default: 1616)\n"
 		"  -i               Disable ionospheric delay for spacecraft scenario\n"
 		"  -p               Disable path loss and hold power level constant\n"
 		"  -v               Show details about simulated channels\n",
@@ -1753,6 +1753,7 @@ int main(int argc, char *argv[])
 	char outfile[MAX_CHAR];
 
 	double samp_freq;
+	double if_freq;
 	int iq_buff_size;
 	int data_format;
 
@@ -1787,7 +1788,7 @@ int main(int argc, char *argv[])
 	umfile[0] = 0;
 	strcpy(outfile, "gpssim.bin");
 	samp_freq = 2.6e6;
-	data_format = SC16;
+	data_format = SC1616;
 	g0.week = -1; // Invalid start time
 	iduration = USER_MOTION_SIZE;
 	duration = (double)iduration/10.0; // Default duration
@@ -1800,7 +1801,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	while ((result=getopt(argc,argv,"e:u:x:g:c:l:o:s:b:T:t:d:ipv"))!=-1)
+	while ((result=getopt(argc,argv,"e:u:x:g:c:l:o:s:f:b:T:t:d:ipv"))!=-1)
 	{
 		switch (result)
 		{
@@ -1846,9 +1847,17 @@ int main(int argc, char *argv[])
 				exit(1);
 			}
 			break;
+		case 'f':
+			if_freq = atof(optarg);
+			if (if_freq>samp_freq)
+			{
+				fprintf(stderr, "ERROR: Invalid intermediate frequency.\n");
+				exit(1);
+			}
+			break;
 		case 'b':
 			data_format = atoi(optarg);
-			if (data_format!=SC01 && data_format!=SC08 && data_format!=SC16)
+			if (data_format!=SC01 && data_format!=SC11 && data_format!=SC88 && data_format!=SC1616)
 			{
 				fprintf(stderr, "ERROR: Invalid I/Q data format.\n");
 				exit(1);
@@ -2144,7 +2153,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	if (data_format==SC08)
+	if (data_format==SC88)
 	{
 		iq8_buff = calloc(2*iq_buff_size, 1);
 		if (iq8_buff==NULL)
@@ -2236,7 +2245,7 @@ int main(int argc, char *argv[])
 				chan[i].azel[1] = rho.azel[1];
 
 				// Update code phase and data bit counters
-				computeCodePhase(&chan[i], rho, 0.1);
+				computeCodePhase(&chan[i], rho, 0.1, if_freq);
 #ifndef FLOAT_CARR_PHASE
 				chan[i].carr_phasestep = (int)round(512.0 * 65536.0 * chan[i].f_carr * delt);
 #endif
@@ -2333,17 +2342,29 @@ int main(int argc, char *argv[])
 
 		if (data_format==SC01)
 		{
+			for (isamp=0; isamp<iq_buff_size; isamp++)
+			{
+				if (isamp%8==0)
+					iq8_buff[isamp/8] = 0x00;
+
+				iq8_buff[isamp/8] |= (iq_buff[isamp*2]>0?0x01:0x00)<<(isamp%8);
+			}
+
+			fwrite(iq8_buff, 1, iq_buff_size/8, fp);
+		}
+		else if (data_format==SC11)
+		{
 			for (isamp=0; isamp<2*iq_buff_size; isamp++)
 			{
 				if (isamp%8==0)
 					iq8_buff[isamp/8] = 0x00;
 
-				iq8_buff[isamp/8] |= (iq_buff[isamp]>0?0x01:0x00)<<(7-isamp%8);
+				iq8_buff[isamp/8] |= (iq_buff[isamp]>0?0x01:0x00)<<(isamp%8);
 			}
 
 			fwrite(iq8_buff, 1, iq_buff_size/4, fp);
 		}
-		else if (data_format==SC08)
+		else if (data_format==SC88)
 		{
 			for (isamp=0; isamp<2*iq_buff_size; isamp++)
 				iq8_buff[isamp] = iq_buff[isamp]>>4; // 12-bit bladeRF -> 8-bit HackRF
